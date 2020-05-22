@@ -13,9 +13,10 @@
 // has been parsed should create a copy of the mutated parts of the tree
 // instead of mutating the original tree.
 
-use std::sync::Arc;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_Precedence
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
@@ -214,7 +215,7 @@ type Location = usize;
 #[derive(Debug, Clone)]
 pub struct LocationRef {
     pub loc: Location,
-    pub ref_: Ref,
+    pub reference: Reference,
 }
 
 #[derive(Debug, Clone)]
@@ -304,7 +305,7 @@ pub struct Binding {
 pub enum BindingKind {
     Missing,
     Identifier {
-        ref_: Ref,
+        reference: Reference,
     },
     Array {
         items: Vec<ArrayBinding>,
@@ -385,7 +386,7 @@ pub enum ExprKind {
         class: Class,
     },
     Identifier {
-        ref_: Ref,
+        reference: Reference,
     },
 
     // This is similar to an Identifier but it represents a reference to an ES6
@@ -408,7 +409,7 @@ pub enum ExprKind {
     // "{x: importedNamespace.x}". This separate type forces code to opt-in to
     // doing this instead of opt-out.
     ImportIdentifier {
-        ref_: Ref,
+        reference: Reference,
     },
     JSXElement {},
     Missing,
@@ -508,7 +509,7 @@ pub enum StmtKind {
     },
     ExportFrom {
         items: Vec<ClauseItem>,
-        namespace: Ref,
+        namespace: Reference,
         path: Path,
     },
     ExportDefault {
@@ -527,13 +528,13 @@ pub enum StmtKind {
     },
     Enum {
         name: LocationRef,
-        arg: Ref,
+        arg: Reference,
         values: Vec<EnumValue>,
         is_export: bool,
     },
     Namespace {
         name: LocationRef,
-        arg: Ref,
+        arg: Reference,
         stmts: Vec<Stmt>,
         is_export: bool,
     },
@@ -654,7 +655,7 @@ pub enum NamespaceSymbol {
     },
     Star {
         location: Location,
-        namespace_ref: Ref,
+        namespace_ref: Reference,
     },
 }
 
@@ -680,7 +681,7 @@ pub struct Case {
 #[derive(Debug, Clone)]
 pub struct EnumValue {
     pub location: Location,
-    pub ref_: Ref,
+    pub reference: Reference,
     pub name: Vec<u16>,
     pub value: Option<Expr>,
 }
@@ -786,7 +787,7 @@ impl SymbolKind {
     }
 }
 
-pub const INVALID_REF: Ref = Ref { outer: 0, inner: 0 };
+pub const INVALID_REF: Reference = Reference { outer: 0, inner: 0 };
 
 // Files are parsed in parallel for speed. We want to allow each parser to
 // generate symbol IDs that won't conflict with each other. We also want to be
@@ -800,14 +801,20 @@ pub const INVALID_REF: Ref = Ref { outer: 0, inner: 0 };
 // The maps can be merged quickly by creating a single outer array containing
 // all inner arrays from all parsed files.
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
-pub struct Ref {
+pub struct Reference {
     pub outer: usize,
     pub inner: usize,
 }
 
+impl Reference {
+    pub const fn new(outer: usize, inner: usize) -> Self {
+        Self { outer, inner }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NamespaceAlias {
-    pub namespace_ref: Ref,
+    pub namespace_ref: Reference,
     pub alias: String,
 }
 
@@ -832,7 +839,7 @@ pub struct Symbol {
     // form a linked-list where the last link is the symbol to use. This link is
     // an invalid ref if it's the last link. If this isn't invalid, you need to
     // FollowSymbols to get the real one.
-    pub link: Ref,
+    pub link: Reference,
 
     // This is used for symbols that represent items in the import clause of an
     // ES6 import statement. These should always be referenced by EImportIdentifier
@@ -872,11 +879,11 @@ pub struct Scope {
     pub kind: ScopeKind,
     pub parent: Arc<Scope>,
     pub children: Vec<Arc<Scope>>,
-    pub members: HashMap<String, Ref>,
-    pub generated: Vec<Ref>,
+    pub members: HashMap<String, Reference>,
+    pub generated: Vec<Reference>,
 
     // This is used to store the ref of the label symbol for ScopeLabel scopes.
-    pub label_ref: Ref,
+    pub label_ref: Reference,
 
     // If a scope contains a direct eval() expression, then none of the symbols
     // inside that scope can be renamed. We conservatively assume that the
@@ -893,49 +900,43 @@ pub struct SymbolMap {
     // single inner array, so you can join the maps together by just make a
     // single outer array containing all of the inner arrays. See the comment on
     // "Ref" for more detail.
-    pub outer: Vec<Vec<Option<Symbol>>>,
+    pub outer: Vec<Vec<Symbol>>,
 }
 
 impl SymbolMap {
     pub fn new(src_count: usize) -> Self {
         Self {
-            outer: vec![vec![]; src_count]
+            outer: vec![vec![]; src_count],
         }
     }
 
-    pub fn set(&mut self, ref_: Ref, symbol: Symbol) {
-        self[ref_] = Some(symbol);
+    pub fn set(&mut self, reference: Reference, symbol: Symbol) {
+        self[reference] = symbol;
     }
 
-    pub fn set_kind(&mut self, ref_: Ref, kind: SymbolKind) {
-        if let Some(ref mut s) = self[ref_] {
-            s.kind = kind;
-        }
+    pub fn set_kind(&mut self, reference: Reference, kind: SymbolKind) {
+        self[reference].kind = kind;
     }
 
-    pub fn set_namespace_alias(&mut self, ref_: Ref, alias: Arc<NamespaceAlias>) {
-        if let Some(ref mut s) = self[ref_] {
-            s.namespace_alias = alias;
-        }
+    pub fn set_namespace_alias(&mut self, reference: Reference, alias: Arc<NamespaceAlias>) {
+        self[reference].namespace_alias = alias;
     }
 
-    pub fn increment_use_count_estimate(&mut self, ref_: Ref) {
-        if let Some(ref mut s) = self[ref_] {
-            s.use_count_estimate += 1;
-        }
+    pub fn increment_use_count_estimate(&mut self, reference: Reference) {
+        self[reference].use_count_estimate += 1;
     }
 }
 
-impl Index<Ref> for SymbolMap {
-    type Output = Option<Symbol>;
+impl Index<Reference> for SymbolMap {
+    type Output = Symbol;
 
-    fn index(&self, index: Ref) -> &Self::Output {
+    fn index(&self, index: Reference) -> &Self::Output {
         &self.outer[index.outer][index.inner]
     }
 }
 
-impl IndexMut<Ref> for SymbolMap {
-    fn index_mut(&mut self, index: Ref) -> &mut Self::Output {
+impl IndexMut<Reference> for SymbolMap {
+    fn index_mut(&mut self, index: Reference) -> &mut Self::Output {
         &mut self.outer[index.outer][index.inner]
     }
 }
@@ -969,102 +970,134 @@ pub struct AST {
     pub stmts: Vec<Stmt>,
     pub symbols: SymbolMap,
     pub module_scope: Scope,
-    pub exports_ref: Ref,
-    pub module_ref: Ref,
+    pub exports_ref: Reference,
+    pub module_ref: Reference,
 
     // This is a bitwise-or of all runtime symbols used by this AST. Runtime
     // symbols are used by ERuntimeCall expressions.
     pub used_rumtime_syms: (), //TODO: runtime.Syn
 }
 
-//// Returns the canonical ref that represents the ref for the provided symbol.
-// // This may not be the provided ref if the symbol has been merged with another
-// // symbol.
-// func FollowSymbols(symbols *SymbolMap, ref Ref) Ref {
-// 	symbol := symbols.Get(ref)
-// 	if symbol.Link == InvalidRef {
-// 		return ref
-// 	}
-//
-// 	link := FollowSymbols(symbols, symbol.Link)
-//
-// 	// Only write if needed to avoid concurrent map update hazards
-// 	if symbol.Link != link {
-// 		symbol.Link = link
-// 		symbols.Set(ref, symbol)
-// 	}
-//
-// 	return link
-// }
-//
-// // Use this before calling "FollowSymbols" from separate threads to avoid
-// // concurrent map update hazards. In Go, mutating a map is not threadsafe
-// // but reading from a map is. Calling "FollowAllSymbols" first ensures that
-// // all mutation is done up front.
-// func FollowAllSymbols(symbols *SymbolMap) {
-// 	for sourceIndex, inner := range symbols.Outer {
-// 		for symbolIndex, _ := range inner {
-// 			FollowSymbols(symbols, Ref{uint32(sourceIndex), uint32(symbolIndex)})
-// 		}
-// 	}
-// }
-//
-// // Makes "old" point to "new" by joining the linked lists for the two symbols
-// // together. That way "FollowSymbols" on both "old" and "new" will result in
-// // the same ref.
-// func MergeSymbols(symbols *SymbolMap, old Ref, new Ref) Ref {
-// 	if old == new {
-// 		return new
-// 	}
-//
-// 	oldSymbol := symbols.Get(old)
-// 	if oldSymbol.Link != InvalidRef {
-// 		oldSymbol.Link = MergeSymbols(symbols, oldSymbol.Link, new)
-// 		symbols.Set(old, oldSymbol)
-// 		return oldSymbol.Link
-// 	}
-//
-// 	newSymbol := symbols.Get(new)
-// 	if newSymbol.Link != InvalidRef {
-// 		newSymbol.Link = MergeSymbols(symbols, old, newSymbol.Link)
-// 		symbols.Set(new, newSymbol)
-// 		return newSymbol.Link
-// 	}
-//
-// 	oldSymbol.Link = new
-// 	newSymbol.UseCountEstimate += oldSymbol.UseCountEstimate
-// 	if oldSymbol.MustNotBeRenamed {
-// 		newSymbol.MustNotBeRenamed = true
-// 	}
-// 	symbols.Set(old, oldSymbol)
-// 	symbols.Set(new, newSymbol)
-// 	return new
-// }
-//
-// func GenerateNonUniqueNameFromPath(text string) string {
-// 	// Get the file name without the extension
-// 	base := path.Base(text)
-// 	lastDot := strings.LastIndexByte(base, '.')
-// 	if lastDot >= 0 {
-// 		base = base[:lastDot]
-// 	}
-//
-// 	// Convert it to an ASCII identifier
-// 	bytes := []byte{}
-// 	for _, c := range base {
-// 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (len(bytes) > 0 && c >= '0' && c <= '9') {
-// 			bytes = append(bytes, byte(c))
-// 		} else if len(bytes) > 0 && bytes[len(bytes)-1] != '_' {
-// 			bytes = append(bytes, '_')
-// 		}
-// 	}
-//
-// 	// Make sure the name isn't empty
-// 	if len(bytes) == 0 {
-// 		return "_"
-// 	}
-// 	return string(bytes)
-// }
+// Returns the canonical ref that represents the ref for the provided symbol.
+// This may not be the provided ref if the symbol has been merged with another
+// symbol.
+pub fn follow_symbols(symbols: &mut SymbolMap, reference: Reference) -> Reference {
+    let sym_link = symbols[reference].link;
+    if sym_link == INVALID_REF {
+        return reference;
+    }
 
+    let link = follow_symbols(symbols, sym_link);
 
+    // Only write if needed to avoid concurrent map update hazards
+    if sym_link != link {
+        symbols[reference].link = link;
+    }
 
+    link
+}
+// Use this before calling "FollowSymbols" from separate threads to avoid
+// concurrent map update hazards. In Go, mutating a map is not threadsafe
+// but reading from a map is. Calling "FollowAllSymbols" first ensures that
+// all mutation is done up front.
+pub fn follow_all_symbols(symbols: &mut SymbolMap) {
+    let outer_len = symbols.outer.len();
+    if outer_len > 0 {
+        let inner_lens: Vec<usize> = symbols.outer.iter().map(Vec::len).collect();
+
+        for i in 0..outer_len {
+            for j in 0..inner_lens[i] {
+                follow_symbols(symbols, Reference::new(i, j));
+            }
+        }
+    }
+}
+
+// Makes "old" point to "new" by joining the linked lists for the two symbols
+// together. That way "FollowSymbols" on both "old" and "new" will result in
+// the same ref.
+pub fn merge_symbols(symbols: &mut SymbolMap, old: Reference, new: Reference) -> Reference {
+    // 	if old == new {
+    // 		return new
+    // 	}
+    //
+    // 	oldSymbol := symbols.Get(old)
+    // 	if oldSymbol.Link != InvalidRef {
+    // 		oldSymbol.Link = MergeSymbols(symbols, oldSymbol.Link, new)
+    // 		symbols.Set(old, oldSymbol)
+    // 		return oldSymbol.Link
+    // 	}
+
+    if old == new {
+        return new;
+    }
+
+    let old_link = symbols[old].link;
+    if old_link != INVALID_REF {
+        symbols[old].link = merge_symbols(symbols, old_link, new);
+        return old_link;
+    }
+
+    // 	newSymbol := symbols.Get(new)
+    // 	if newSymbol.Link != InvalidRef {
+    // 		newSymbol.Link = MergeSymbols(symbols, old, newSymbol.Link)
+    // 		symbols.Set(new, newSymbol)
+    // 		return newSymbol.Link
+    // 	}
+    let new_link = symbols[new].link;
+    if new_link != INVALID_REF {
+        symbols[new].link = merge_symbols(symbols, old, new_link);
+        return new_link;
+    }
+
+    // 	oldSymbol.Link = new
+    // 	newSymbol.UseCountEstimate += oldSymbol.UseCountEstimate
+    // 	if oldSymbol.MustNotBeRenamed {
+    // 		newSymbol.MustNotBeRenamed = true
+    // 	}
+    // 	symbols.Set(old, oldSymbol)
+    // 	symbols.Set(new, newSymbol)
+    // 	return new
+    symbols[old].link = new;
+    symbols[new].use_count_estimate += symbols[old].use_count_estimate;
+    if symbols[old].must_not_be_renamed {
+        symbols[new].must_not_be_renamed = true;
+    }
+
+    new
+}
+
+pub fn generate_non_unique_name_from_path<P: Into<PathBuf>>(path: P) -> String {
+    let path = path.into();
+    let mut name = String::new();
+
+    // Get the file name without the extension
+    if let Some(Some(a)) = path.file_stem().map(|s| s.to_str()) {
+        let mut tail: Option<char> = None;
+        // Convert it to an ASCII identifier
+        for c in a.chars() {
+            if ('A'..='Z').contains(&c)
+                || ('a'..='z').contains(&c)
+                || (!name.is_empty() && ('0'..'9').contains(&c))
+            {
+                name.push(c);
+                tail = Some(c);
+            } else {
+                if !name.is_empty() {
+                    if let Some('_') = tail {
+                    } else {
+                        name.push('_');
+                        tail = Some('_');
+                    }
+                }
+            }
+        }
+    }
+
+    // Make sure the name isn't empty
+    if name.is_empty() {
+        return "_".into();
+    }
+
+    name
+}
