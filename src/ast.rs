@@ -13,6 +13,10 @@
 // has been parsed should create a copy of the mutated parts of the tree
 // instead of mutating the original tree.
 
+use std::sync::Arc;
+use std::collections::HashMap;
+use std::ops::{Index, IndexMut};
+
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Operator_Precedence
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
 pub enum Operator {
@@ -207,19 +211,13 @@ pub const OPERATOR_TABLE: [OperatorTableEntry; 50] = [
 
 type Location = usize;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocationRef {
     pub loc: Location,
     pub ref_: Ref,
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
-pub struct Ref {
-    outer: u32,
-    inner: u32,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Path {
     pub loc: Location,
     pub text: String,
@@ -233,7 +231,7 @@ pub enum PropertyKind {
     PropertySpread,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Property {
     pub kind: PropertyKind,
     pub is_computed: bool,
@@ -250,7 +248,7 @@ pub struct Property {
 // 	DefaultValue *Expr
 // }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PropertyBinding {
     pub is_computed: bool,
     pub is_spread: bool,
@@ -259,7 +257,7 @@ pub struct PropertyBinding {
     pub default_value: Option<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Arg {
     // "constructor(public x: boolean) {}"
     pub is_typescirpt_ctor_field: bool,
@@ -267,7 +265,7 @@ pub struct Arg {
     pub default_: Option<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub name: Option<LocationRef>,
     pub args: Vec<Arg>,
@@ -277,32 +275,32 @@ pub struct Function {
     pub body: (),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionBody {
     pub location: Location,
     pub stmts: Vec<Stmt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Class {
     pub name: LocationRef,
     pub extends: Expr,
     pub properties: Vec<Property>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ArrayBinding {
     pub binding: Binding,
     pub default_value: Option<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Binding {
     pub location: Location,
     pub data: Box<BindingKind>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BindingKind {
     Missing,
     Identifier {
@@ -317,13 +315,13 @@ pub enum BindingKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expr {
     pub location: Location,
     pub data: Box<ExprKind>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Array {
         items: Vec<Expr>,
@@ -432,7 +430,7 @@ pub enum ExprKind {
     Template {
         tag: Expr,
         head: Vec<u16>,
-        head_raw: String,
+        head_raw: String, // This is only filled out for tagged template literals
         parts: Vec<TemplatePart>,
     },
     RegExp {
@@ -459,7 +457,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TemplatePart {
     pub value: Expr,
     pub tail: Vec<u16>,
@@ -482,19 +480,19 @@ pub fn join_all_with_comma<I: Iterator<Item = Expr>>(mut all: I) -> Expr {
     all.fold(first, |a, b| join_with_comma(a, b))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprOrStmt {
     Expr(Expr),
     Stmt,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Stmt {
     pub location: Location,
     pub data: Box<StmtKind>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     Block {
         stmts: Vec<Stmt>,
@@ -616,7 +614,7 @@ pub enum StmtKind {
         // Otherwise: This is an auto-generated Ref for the namespace representing
         // the imported file. In this case StarLoc is nil. The NamespaceRef is used
         // when converting this module to a CommonJS module.
-        namespace_symbol: NameSpaceSymbol,
+        namespace_symbol: NamespaceSymbol,
         default_name: Option<LocationRef>,
         path: Path,
     },
@@ -649,8 +647,8 @@ pub enum LocalKind {
     Const,
 }
 
-#[derive(Debug)]
-pub enum NameSpaceSymbol {
+#[derive(Debug, Clone)]
+pub enum NamespaceSymbol {
     Clause {
         items: Vec<ClauseItem>,
     },
@@ -660,26 +658,26 @@ pub enum NameSpaceSymbol {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Catch {
     pub location: Location,
     pub binding: Option<Binding>,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Finally {
     pub location: Location,
     pub stmts: Vec<Stmt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Case {
     pub value: Option<Expr>,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EnumValue {
     pub location: Location,
     pub ref_: Ref,
@@ -712,15 +710,361 @@ impl Stmt {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClauseItem {
     pub alias: String,
     pub alias_location: Location,
     pub name: LocationRef,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Decl {
     pub binding: Binding,
-    value: Option<Expr>,
+    pub value: Option<Expr>,
 }
+
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+pub enum SymbolKind {
+    // An unbound symbol is one that isn't declared in the file it's referenced
+    // in. For example, using "window" without declaring it will be unbound.
+    Unbound = 0,
+
+    // This has special merging behavior. You're allowed to re-declare these
+    // symbols more than once in the same scope. These symbols are also hoisted
+    // out of the scope they are declared in to the closest containing function
+    // or module scope. These are the symbols with this kind:
+    //
+    // - Function arguments
+    // - Function statements
+    // - Variables declared using "var"
+    //
+    Hoisted,
+    HoistedFunction,
+
+    // There's a weird special case where catch variables declared using a simple
+    // identifier (i.e. not a binding pattern) block hoisted variables instead of
+    // becoming an error:
+    //
+    //   var e = 0;
+    //   try { throw 1 } catch (e) {
+    //     print(e) // 1
+    //     var e = 2
+    //     print(e) // 2
+    //   }
+    //   print(e) // 0 (since the hoisting stops at the catch block boundary)
+    //
+    // However, other forms are still a syntax error:
+    //
+    //   try {} catch (e) { let e }
+    //   try {} catch ({e}) { var e }
+    //
+    // This symbol is for handling this weird special case.
+    CatchIdentifier,
+
+    // Classes can merge with TypeScript namespaces.
+    Class,
+
+    // TypeScript enums can merge with TypeScript namespaces and other TypeScript
+    // enums.
+    TSEnum,
+
+    // TypeScript namespaces can merge with classes, functions, TypeScript enums,
+    // and other TypeScript namespaces.
+    TSNamespace,
+
+    // In TypeScript, imports are allowed to silently collide with symbols within
+    // the module. Presumably this is because the imports may be type-only.
+    TSImport,
+
+    // This annotates all other symbols that don't have special behavior.
+    Other,
+}
+
+impl SymbolKind {
+    pub fn is_hoisted(self) -> bool {
+        self == SymbolKind::Hoisted || self == SymbolKind::HoistedFunction
+    }
+}
+
+pub const INVALID_REF: Ref = Ref { outer: 0, inner: 0 };
+
+// Files are parsed in parallel for speed. We want to allow each parser to
+// generate symbol IDs that won't conflict with each other. We also want to be
+// able to quickly merge symbol tables from all files into one giant symbol
+// table.
+//
+// We can accomplish both goals by giving each symbol ID two parts: an outer
+// index that is unique to the parser goroutine, and an inner index that
+// increments as the parser generates new symbol IDs. Then a symbol map can
+// be an array of arrays indexed first by outer index, then by inner index.
+// The maps can be merged quickly by creating a single outer array containing
+// all inner arrays from all parsed files.
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+pub struct Ref {
+    pub outer: usize,
+    pub inner: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct NamespaceAlias {
+    pub namespace_ref: Ref,
+    pub alias: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    pub kind: SymbolKind,
+
+    // Certain symbols must not be renamed or minified. For example, the
+    // "arguments" variable is declared by the runtime for every function.
+    // Renaming can also break any identifier used inside a "with" statement.
+    pub must_not_be_renamed: bool,
+
+    // An estimate of the number of uses of this symbol. This is used for
+    // minification (to prefer shorter names for more frequently used symbols).
+    // The reason why this is an estimate instead of an accurate count is that
+    // it's not updated during dead code elimination for speed. I figure that
+    // even without updating after parsing it's still a pretty good heuristic.
+    pub use_count_estimate: u32,
+    pub name: String,
+
+    // Used by the parser for single pass parsing. Symbols that have been merged
+    // form a linked-list where the last link is the symbol to use. This link is
+    // an invalid ref if it's the last link. If this isn't invalid, you need to
+    // FollowSymbols to get the real one.
+    pub link: Ref,
+
+    // This is used for symbols that represent items in the import clause of an
+    // ES6 import statement. These should always be referenced by EImportIdentifier
+    // instead of an EIdentifier. When this is present, the expression should
+    // be printed as a property access off the namespace instead of as a bare
+    // identifier.
+    //
+    // For correctness, this must be stored on the symbol instead of indirectly
+    // associated with the Ref for the symbol somehow. In ES6 "flat bundling"
+    // mode, re-exported symbols are collapsed using MergeSymbols() and renamed
+    // symbols from other files that end up at this symbol must be able to tell
+    // if it has a namespace alias.
+    pub namespace_alias: Arc<NamespaceAlias>,
+}
+
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+pub enum ScopeKind {
+    Block = 0,
+    With,
+    Label,
+    ClassName,
+
+    // The scopes below stop hoisted variables from extending into parent scopes
+    Entry, // This is a module, TypeScript enum, or TypeScript namespace
+    FunctionArgs,
+    FunctionBody,
+}
+
+impl ScopeKind {
+    pub fn stops_hoisting(self) -> bool {
+        self >= ScopeKind::Entry
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Scope {
+    pub kind: ScopeKind,
+    pub parent: Arc<Scope>,
+    pub children: Vec<Arc<Scope>>,
+    pub members: HashMap<String, Ref>,
+    pub generated: Vec<Ref>,
+
+    // This is used to store the ref of the label symbol for ScopeLabel scopes.
+    pub label_ref: Ref,
+
+    // If a scope contains a direct eval() expression, then none of the symbols
+    // inside that scope can be renamed. We conservatively assume that the
+    // evaluated code might reference anything that it has access to.
+    pub contains_direct_eval: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolMap {
+    // This could be represented as a "map[Ref]Symbol" but a two-level array was
+    // more efficient in profiles. This appears to be because it doesn't involve
+    // a hash. This representation also makes it trivial to quickly merge symbol
+    // maps from multiple files together. Each file only generates symbols in a
+    // single inner array, so you can join the maps together by just make a
+    // single outer array containing all of the inner arrays. See the comment on
+    // "Ref" for more detail.
+    pub outer: Vec<Vec<Option<Symbol>>>,
+}
+
+impl SymbolMap {
+    pub fn new(src_count: usize) -> Self {
+        Self {
+            outer: vec![vec![]; src_count]
+        }
+    }
+
+    pub fn set(&mut self, ref_: Ref, symbol: Symbol) {
+        self[ref_] = Some(symbol);
+    }
+
+    pub fn set_kind(&mut self, ref_: Ref, kind: SymbolKind) {
+        if let Some(ref mut s) = self[ref_] {
+            s.kind = kind;
+        }
+    }
+
+    pub fn set_namespace_alias(&mut self, ref_: Ref, alias: Arc<NamespaceAlias>) {
+        if let Some(ref mut s) = self[ref_] {
+            s.namespace_alias = alias;
+        }
+    }
+
+    pub fn increment_use_count_estimate(&mut self, ref_: Ref) {
+        if let Some(ref mut s) = self[ref_] {
+            s.use_count_estimate += 1;
+        }
+    }
+}
+
+impl Index<Ref> for SymbolMap {
+    type Output = Option<Symbol>;
+
+    fn index(&self, index: Ref) -> &Self::Output {
+        &self.outer[index.outer][index.inner]
+    }
+}
+
+impl IndexMut<Ref> for SymbolMap {
+    fn index_mut(&mut self, index: Ref) -> &mut Self::Output {
+        &mut self.outer[index.outer][index.inner]
+    }
+}
+
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+pub enum ImportKind {
+    Stmt = 0,
+    Require,
+    Dynamic,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportPath {
+    pub path: Path,
+    pub kind: ImportKind,
+}
+
+//type AST struct {
+#[derive(Debug, Clone)]
+pub struct AST {
+    pub import_paths: Vec<ImportPath>,
+    pub was_typescript: bool,
+
+    // This is true if something used the "exports" or "module" variables, which
+    // means they could have exported something. It's also true if the file
+    // contains a top-level return statement. When a file uses CommonJS features,
+    // it's not a candidate for "flat bundling" and must be wrapped in its own
+    // closure.
+    pub uses_commonjs_features: bool,
+    pub hash_bang: String,
+    pub stmts: Vec<Stmt>,
+    pub symbols: SymbolMap,
+    pub module_scope: Scope,
+    pub exports_ref: Ref,
+    pub module_ref: Ref,
+
+    // This is a bitwise-or of all runtime symbols used by this AST. Runtime
+    // symbols are used by ERuntimeCall expressions.
+    pub used_rumtime_syms: (), //TODO: runtime.Syn
+}
+
+//// Returns the canonical ref that represents the ref for the provided symbol.
+// // This may not be the provided ref if the symbol has been merged with another
+// // symbol.
+// func FollowSymbols(symbols *SymbolMap, ref Ref) Ref {
+// 	symbol := symbols.Get(ref)
+// 	if symbol.Link == InvalidRef {
+// 		return ref
+// 	}
+//
+// 	link := FollowSymbols(symbols, symbol.Link)
+//
+// 	// Only write if needed to avoid concurrent map update hazards
+// 	if symbol.Link != link {
+// 		symbol.Link = link
+// 		symbols.Set(ref, symbol)
+// 	}
+//
+// 	return link
+// }
+//
+// // Use this before calling "FollowSymbols" from separate threads to avoid
+// // concurrent map update hazards. In Go, mutating a map is not threadsafe
+// // but reading from a map is. Calling "FollowAllSymbols" first ensures that
+// // all mutation is done up front.
+// func FollowAllSymbols(symbols *SymbolMap) {
+// 	for sourceIndex, inner := range symbols.Outer {
+// 		for symbolIndex, _ := range inner {
+// 			FollowSymbols(symbols, Ref{uint32(sourceIndex), uint32(symbolIndex)})
+// 		}
+// 	}
+// }
+//
+// // Makes "old" point to "new" by joining the linked lists for the two symbols
+// // together. That way "FollowSymbols" on both "old" and "new" will result in
+// // the same ref.
+// func MergeSymbols(symbols *SymbolMap, old Ref, new Ref) Ref {
+// 	if old == new {
+// 		return new
+// 	}
+//
+// 	oldSymbol := symbols.Get(old)
+// 	if oldSymbol.Link != InvalidRef {
+// 		oldSymbol.Link = MergeSymbols(symbols, oldSymbol.Link, new)
+// 		symbols.Set(old, oldSymbol)
+// 		return oldSymbol.Link
+// 	}
+//
+// 	newSymbol := symbols.Get(new)
+// 	if newSymbol.Link != InvalidRef {
+// 		newSymbol.Link = MergeSymbols(symbols, old, newSymbol.Link)
+// 		symbols.Set(new, newSymbol)
+// 		return newSymbol.Link
+// 	}
+//
+// 	oldSymbol.Link = new
+// 	newSymbol.UseCountEstimate += oldSymbol.UseCountEstimate
+// 	if oldSymbol.MustNotBeRenamed {
+// 		newSymbol.MustNotBeRenamed = true
+// 	}
+// 	symbols.Set(old, oldSymbol)
+// 	symbols.Set(new, newSymbol)
+// 	return new
+// }
+//
+// func GenerateNonUniqueNameFromPath(text string) string {
+// 	// Get the file name without the extension
+// 	base := path.Base(text)
+// 	lastDot := strings.LastIndexByte(base, '.')
+// 	if lastDot >= 0 {
+// 		base = base[:lastDot]
+// 	}
+//
+// 	// Convert it to an ASCII identifier
+// 	bytes := []byte{}
+// 	for _, c := range base {
+// 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (len(bytes) > 0 && c >= '0' && c <= '9') {
+// 			bytes = append(bytes, byte(c))
+// 		} else if len(bytes) > 0 && bytes[len(bytes)-1] != '_' {
+// 			bytes = append(bytes, '_')
+// 		}
+// 	}
+//
+// 	// Make sure the name isn't empty
+// 	if len(bytes) == 0 {
+// 		return "_"
+// 	}
+// 	return string(bytes)
+// }
+
+
+
