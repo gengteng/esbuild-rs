@@ -1,9 +1,12 @@
 pub mod ast;
 pub mod bundler;
+pub mod error;
 pub mod fs;
 pub mod lexer;
+pub mod logging;
 pub mod parser;
 pub mod parser_json;
 pub mod renamer;
 pub mod resolver;
 pub mod runtime;
+pub mod tables;

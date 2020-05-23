@@ -210,7 +210,7 @@ pub const OPERATOR_TABLE: [OperatorTableEntry; 50] = [
     make_entry!("^=", Operator::Assign, false),
 ];
 
-type Location = usize;
+pub type Location = usize;
 
 #[derive(Debug, Clone)]
 pub struct LocationRef {
@@ -975,7 +975,7 @@ pub struct AST {
 
     // This is a bitwise-or of all runtime symbols used by this AST. Runtime
     // symbols are used by ERuntimeCall expressions.
-    pub used_rumtime_syms: (), //TODO: runtime.Syn
+    pub used_runtime_symbols: (), //TODO: runtime.Syn
 }
 
 // Returns the canonical ref that represents the ref for the provided symbol.
