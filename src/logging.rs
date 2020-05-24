@@ -1,7 +1,6 @@
 use crate::ast::Location;
 use std::fmt;
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 // Logging is currently designed to look and feel like clang's error format.
@@ -42,12 +41,91 @@ pub struct Msg {
     pub kind: MsgKind,
 }
 
+impl Msg {
+    pub fn to_terminal_string(
+        &self,
+        options: &StderrOptions,
+        terminal_info: &TerminalInfo,
+    ) -> String {
+        let (kind, kind_color) = match self.kind {
+            MsgKind::Error => ("error", COLOR_RED),
+            MsgKind::Warning => ("warning", COLOR_MAGENTA),
+        };
+
+        if self.source.pretty_path.is_empty() {
+            if terminal_info.use_color_escapes {
+                return format!(
+                    "{}{}{}: {}{}{}\n",
+                    COLOR_BOLD, kind_color, kind, COLOR_RESET_BOLD, self.text, COLOR_RESET
+                );
+            }
+
+            return format!("{}: {}\n", kind, self.text);
+        }
+
+        if !options.include_source {
+            if terminal_info.use_color_escapes {
+                return format!(
+                    "{}{}: {}{}: {}{}{}\n",
+                    COLOR_BOLD,
+                    self.source.pretty_path,
+                    kind_color,
+                    kind,
+                    COLOR_RESET_BOLD,
+                    self.text,
+                    COLOR_RESET
+                );
+            }
+
+            return format!("{}: {}: {}\n", self.source.pretty_path, kind, self.text);
+        }
+
+        let detail = MsgDetail::new(self, terminal_info);
+
+        if terminal_info.use_color_escapes {
+            format!(
+                "{}{}:{}:{}: {}{}: {}{}\n{}{}{}{}{}{}\n{}{}{}{}\n",
+                COLOR_BOLD,
+                detail.path,
+                detail.line,
+                detail.column,
+                kind_color,
+                detail.kind,
+                COLOR_RESET_BOLD,
+                detail.message,
+                COLOR_RESET,
+                detail.source_before,
+                COLOR_GREEN,
+                detail.source_marked,
+                COLOR_RESET,
+                detail.source_after,
+                COLOR_GREEN,
+                detail.indent,
+                detail.marker,
+                COLOR_RESET
+            )
+        } else {
+            format!(
+                "{}:{}:{}: {}: {}\n{}\n{}{}\n",
+                detail.path,
+                detail.line,
+                detail.column,
+                detail.kind,
+                detail.message,
+                detail.source,
+                detail.indent,
+                detail.marker
+            )
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Source {
     pub index: u32,
     pub is_stdin: bool,
-    pub absolute_path: PathBuf,
-    pub pretty_path: PathBuf,
+    pub absolute_path: String,
+    pub pretty_path: String,
     pub contents: String,
 }
 
@@ -149,7 +227,7 @@ pub struct StderrOptions {
 
 #[derive(Debug, Clone)]
 pub struct MsgDetail {
-    pub path: PathBuf,
+    pub path: String,
     pub line: usize,
     pub column: usize,
     pub kind: String,
@@ -162,4 +240,10 @@ pub struct MsgDetail {
 
     pub indent: String,
     pub marker: String,
+}
+
+impl MsgDetail {
+    pub fn new(_msg: &Msg, _terminal_info: &TerminalInfo) -> Self {
+        unimplemented!();
+    }
 }

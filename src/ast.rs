@@ -1003,10 +1003,9 @@ pub fn follow_symbols(symbols: &mut SymbolMap, reference: Reference) -> Referenc
 pub fn follow_all_symbols(symbols: &mut SymbolMap) {
     let outer_len = symbols.outer.len();
     if outer_len > 0 {
-        let inner_lens: Vec<usize> = symbols.outer.iter().map(Vec::len).collect();
-
         for i in 0..outer_len {
-            for j in 0..inner_lens[i] {
+            let inner_len = symbols.outer[i].len();
+            for j in 0..inner_len {
                 follow_symbols(symbols, Reference::new(i, j));
             }
         }
