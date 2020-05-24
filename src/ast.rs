@@ -476,9 +476,12 @@ pub fn join_with_comma(a: Expr, b: Expr) -> Expr {
     }
 }
 
-pub fn join_all_with_comma<I: Iterator<Item = Expr>>(mut all: I) -> Expr {
-    let first = all.next().unwrap();
-    all.fold(first, join_with_comma)
+pub fn join_all_with_comma<I: Iterator<Item = Expr>>(mut all: I) -> Option<Expr> {
+    if let Some(first) = all.next() {
+        Some(all.fold(first, join_with_comma))
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
