@@ -143,13 +143,13 @@ impl Source {
         }
 
         let quote = text[0];
-        if quote == '"' as u8 || quote == '\'' as u8 {
+        if quote == b'"' || quote == b'\'' {
             let mut i = 1;
             while i < text.len() {
                 let c = text[i];
                 if c == quote {
                     return location..i + 1;
-                } else if c == '\\' as u8 {
+                } else if c == b'\\' {
                     i += 1;
                 }
             }
@@ -181,17 +181,15 @@ impl fmt::Display for MsgCounts {
             } else {
                 write!(f, "{}", plural("warning", self.warnings))
             }
+        } else if self.warnings == 0 {
+            write!(f, "{}", plural("error", self.errors))
         } else {
-            if self.warnings == 0 {
-                write!(f, "{}", plural("error", self.errors))
-            } else {
-                write!(
-                    f,
-                    "{} and {}",
-                    plural("warning", self.warnings),
-                    plural("error", self.errors)
-                )
-            }
+            write!(
+                f,
+                "{} and {}",
+                plural("warning", self.warnings),
+                plural("error", self.errors)
+            )
         }
     }
 }
@@ -225,6 +223,32 @@ pub struct StderrOptions {
     pub color: StderrColor,
 }
 
+pub fn compute_line_and_column(text: &str) -> (usize, usize, usize) {
+    let mut prev_code = '\0';
+    let mut last_line_start = 0;
+    let mut line_count = 0;
+
+    for (i, code) in text.chars().enumerate() {
+        match code {
+            '\n' => {
+                last_line_start = i + 1;
+                if prev_code != '\r' {
+                    line_count += 1;
+                }
+            }
+            '\r' | '\u{2028}' | '\u{2029}' => {
+                last_line_start = i + 1;
+            }
+            _ => {}
+        }
+        prev_code = code;
+    }
+
+    let column_count = text.len() - last_line_start;
+
+    (line_count, column_count, last_line_start)
+}
+
 #[derive(Debug, Clone)]
 pub struct MsgDetail {
     pub path: String,
@@ -243,7 +267,107 @@ pub struct MsgDetail {
 }
 
 impl MsgDetail {
-    pub fn new(_msg: &Msg, _terminal_info: &TerminalInfo) -> Self {
+    pub fn new(msg: &Msg, terminal_info: &TerminalInfo) -> Self {
+        let contents = &msg.source.contents;
+        let (line_count, col_count, line_start) = compute_line_and_column(&contents[0..msg.start]);
+        let mut line_end = contents.len();
+
+        'a: for (i, code) in contents[line_start..].chars().enumerate() {
+            match code {
+                '\r' | '\n' | '\u{2028}' | '\u{2029}' => {
+                    line_end = line_start + i;
+                    break 'a;
+                }
+                _ => {}
+            }
+        }
+
+        let spaces_per_tab = 2;
+        let line_text = render_tab_stops(&contents[line_start..line_end], spaces_per_tab);
+        let indent = " ".repeat(render_tab_stops_len(
+            &contents[line_start..msg.start],
+            spaces_per_tab,
+        ));
+        let marker = "^";
+        let mut marker_start = indent.len();
+        let mut marker_end = if msg.length > 0 {
+            // Extend markers to cover the full range of the error
+            render_tab_stops_len(&contents[line_start..msg.start], spaces_per_tab)
+        } else {
+            indent.len()
+        };
+
+        let line_text_len = line_text.len();
+
+        // Clip the marker to the bounds of the line
+        if marker_start > line_text_len {
+            marker_start = line_text_len;
+        }
+
+        if marker_end > line_text_len {
+            marker_end = line_text_len;
+        }
+
+        if marker_end < marker_start {
+            marker_end = marker_start;
+        }
+
+        // Trim the line to fit the termial width
+        if terminal_info.width > 0 && line_text_len > terminal_info.width {
+            // TODO: Try to center the error
+            let slice_start = (marker_start + marker_end - terminal_info.width) / 2;
+            if slice_start > marker_start - terminal_info.width / 5 {}
+        }
+
         unimplemented!();
     }
+}
+
+fn render_tab_stops_len(with_tabs: &str, spaces_per_tab: usize) -> usize {
+    if !with_tabs.contains('\t') {
+        return with_tabs.len();
+    }
+
+    let mut count = 0;
+
+    for c in with_tabs.chars() {
+        match c {
+            '\t' => {
+                count += spaces_per_tab - (count % spaces_per_tab);
+            }
+            _ => {
+                count += 1;
+            }
+        }
+    }
+
+    count
+}
+
+fn render_tab_stops(with_tabs: &str, spaces_per_tab: usize) -> String {
+    if !with_tabs.contains('\t') {
+        return with_tabs.to_owned();
+    }
+
+    let mut without_tabs = String::new();
+    let mut count = 0;
+
+    for c in with_tabs.chars() {
+        match c {
+            '\t' => {
+                let spaces = spaces_per_tab - (count % spaces_per_tab);
+
+                for _ in 0..spaces {
+                    without_tabs.push(' ');
+                    count += 1;
+                }
+            }
+            c => {
+                without_tabs.push(c);
+                count += 1;
+            }
+        }
+    }
+
+    without_tabs
 }

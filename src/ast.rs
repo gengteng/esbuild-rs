@@ -478,7 +478,7 @@ pub fn join_with_comma(a: Expr, b: Expr) -> Expr {
 
 pub fn join_all_with_comma<I: Iterator<Item = Expr>>(mut all: I) -> Expr {
     let first = all.next().unwrap();
-    all.fold(first, |a, b| join_with_comma(a, b))
+    all.fold(first, join_with_comma)
 }
 
 #[derive(Debug, Clone)]
@@ -1081,13 +1081,11 @@ pub fn generate_non_unique_name_from_path<P: Into<PathBuf>>(path: P) -> String {
             {
                 name.push(c);
                 tail = Some(c);
-            } else {
-                if !name.is_empty() {
-                    if let Some('_') = tail {
-                    } else {
-                        name.push('_');
-                        tail = Some('_');
-                    }
+            } else if !name.is_empty() {
+                if let Some('_') = tail {
+                } else {
+                    name.push('_');
+                    tail = Some('_');
                 }
             }
         }
