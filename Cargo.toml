@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 terminal_size = "0.1.12"
+atty = "0.2.14"
 
 [[bin]]
 path = "src/bin/main.rs"

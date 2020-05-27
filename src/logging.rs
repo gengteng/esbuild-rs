@@ -1,6 +1,6 @@
 use crate::ast::Location;
 use std::fmt;
-use std::ops::Range;
+use std::ops::{Range, RangeFrom, RangeTo};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 // Logging is currently designed to look and feel like clang's error format.
@@ -94,11 +94,11 @@ impl Msg {
                 COLOR_RESET_BOLD,
                 detail.message,
                 COLOR_RESET,
-                detail.source_before,
+                detail.source_before(),
                 COLOR_GREEN,
-                detail.source_marked,
+                detail.source_marked(),
                 COLOR_RESET,
-                detail.source_after,
+                detail.source_after(),
                 COLOR_GREEN,
                 detail.indent,
                 detail.marker,
@@ -201,6 +201,18 @@ pub struct TerminalInfo {
     width: usize,
 }
 
+impl Default for TerminalInfo {
+    fn default() -> Self {
+        Self {
+            is_tty: atty::is(atty::Stream::Stderr),
+            use_color_escapes: true,
+            width: terminal_size::terminal_size()
+                .map(|(w, _)| w.0 as usize)
+                .unwrap_or(0),
+        }
+    }
+}
+
 pub const COLOR_RESET: &str = "\033[0m";
 pub const COLOR_RED: &str = "\033[31m";
 pub const COLOR_GREEN: &str = "\033[32m";
@@ -258,9 +270,9 @@ pub struct MsgDetail {
     pub message: String,
 
     pub source: String,
-    pub source_before: String,
-    pub source_marked: String,
-    pub source_after: String,
+    pub source_before: RangeTo<usize>,
+    pub source_marked: Range<usize>,
+    pub source_after: RangeFrom<usize>,
 
     pub indent: String,
     pub marker: String,
@@ -283,12 +295,11 @@ impl MsgDetail {
         }
 
         let spaces_per_tab = 2;
-        let line_text = render_tab_stops(&contents[line_start..line_end], spaces_per_tab);
-        let indent = " ".repeat(render_tab_stops_len(
+        let mut line_text = render_tab_stops(&contents[line_start..line_end], spaces_per_tab);
+        let mut indent = " ".repeat(render_tab_stops_len(
             &contents[line_start..msg.start],
             spaces_per_tab,
         ));
-        let marker = "^";
         let mut marker_start = indent.len();
         let mut marker_end = if msg.length > 0 {
             // Extend markers to cover the full range of the error
@@ -312,14 +323,86 @@ impl MsgDetail {
             marker_end = marker_start;
         }
 
-        // Trim the line to fit the termial width
+        // Trim the line to fit the terminal width
         if terminal_info.width > 0 && line_text_len > terminal_info.width {
             // TODO: Try to center the error
-            let slice_start = (marker_start + marker_end - terminal_info.width) / 2;
-            if slice_start > marker_start - terminal_info.width / 5 {}
+            let mut slice_start = if marker_start + marker_end >= terminal_info.width {
+                let slice_start = (marker_start + marker_end - terminal_info.width) / 2;
+                if marker_start >= terminal_info.width / 5 {
+                    let temp = marker_start - terminal_info.width / 5;
+                    if slice_start > temp {
+                        temp
+                    } else {
+                        slice_start
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            if slice_start > line_text_len - terminal_info.width {
+                slice_start = line_text_len - terminal_info.width;
+            }
+            let slice_end = slice_start + terminal_info.width;
+
+            // Slice the line
+            let mut sliced_line = line_text[slice_start..slice_end].to_owned();
+            marker_start = if marker_start > slice_start {
+                marker_start - slice_start
+            } else {
+                0
+            };
+            if marker_end > sliced_line.len() {
+                marker_end = sliced_line.len();
+            }
+
+            // Truncate the ends with "..."
+            if sliced_line.len() > 3 && slice_start > 0 {
+                sliced_line = "...".to_owned() + &sliced_line[3..];
+            }
+
+            // TODO: ...
+
+            // Now we can compute the indent
+            indent = " ".repeat(marker_start);
+            line_text = sliced_line;
         }
 
-        unimplemented!();
+        MsgDetail {
+            path: msg.source.pretty_path.clone(),
+            line: line_count + 1,
+            column: col_count,
+            kind: match msg.kind {
+                MsgKind::Error => "error",
+                MsgKind::Warning => "warning",
+            }
+            .to_owned(),
+            message: msg.text.to_owned(),
+            source: line_text,
+            source_before: ..marker_start,
+            source_marked: marker_start..marker_end,
+            source_after: marker_end..,
+            indent,
+            marker: if marker_end - marker_start > 1 {
+                "~".repeat(marker_end - marker_start)
+            } else {
+                "^".to_owned()
+            },
+        }
+    }
+
+    pub fn source_before(&self) -> &str {
+        &self.source[self.source_before]
+    }
+
+    pub fn source_marked(&self) -> &str {
+        &self.source[self.source_marked.clone()]
+    }
+
+    pub fn source_after(&self) -> &str {
+        &self.source[self.source_after.clone()]
     }
 }
 

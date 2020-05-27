@@ -1,6 +1,5 @@
 use esbuild_rs::ast::{join_all_with_comma, Expr, ExprKind};
 use esbuild_rs::logging::MsgCounts;
-use std::collections::HashSet;
 use std::fmt::Debug;
 
 trait DebugPrintln: Debug {
