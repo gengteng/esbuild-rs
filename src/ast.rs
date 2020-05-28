@@ -210,7 +210,10 @@ pub const OPERATOR_TABLE: [OperatorTableEntry; 50] = [
     make_entry!("^=", Operator::Assign, false),
 ];
 
+// This is the 0-based index of this location from the start of the file
 pub type Location = usize;
+
+// use std::ops::Range
 
 #[derive(Debug, Clone)]
 pub struct LocationRef {
@@ -222,7 +225,18 @@ pub struct LocationRef {
 pub struct Path {
     pub loc: Location,
     pub text: String,
+
+    // If "UseSourceIndex" is true, the path is already resolved. This is used
+    // for generated paths. The source file it has been resolved to is stored in
+    // the "SourceIndex" field.
+    pub use_source_index: bool,
+    pub source_index: usize,
 }
+
+// The runtime source is always at a special index. The index is always zero
+// but this constant is always used instead to improve readability and ensure
+// all code that references this index can be discovered easily.
+pub const RUNTIME_SOURCE_INDEX: usize = 0;
 
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
 pub enum PropertyKind {
@@ -239,15 +253,21 @@ pub struct Property {
     pub is_method: bool,
     pub is_static: bool,
     pub key: Expr,
-}
 
-//type PropertyBinding struct {
-// 	IsComputed   bool
-// 	IsSpread     bool
-// 	Key          Expr
-// 	Value        Binding
-// 	DefaultValue *Expr
-// }
+    // This is omitted for class fields
+    pub value: Option<Expr>,
+
+    // This is used when parsing a pattern that uses default values:
+    //
+    //   [a = 1] = [];
+    //   ({a = 1} = {});
+    //
+    // It's also used for class fields:
+    //
+    //   class Foo { a = 1 }
+    //
+    initializer: Option<Expr>,
+}
 
 #[derive(Debug, Clone)]
 pub struct PropertyBinding {
@@ -261,7 +281,7 @@ pub struct PropertyBinding {
 #[derive(Debug, Clone)]
 pub struct Arg {
     // "constructor(public x: boolean) {}"
-    pub is_typescirpt_ctor_field: bool,
+    pub is_typescript_ctor_field: bool,
     pub binding: Binding,
     pub default_: Option<Expr>,
 }
@@ -273,7 +293,7 @@ pub struct Function {
     pub is_async: bool,
     pub is_generator: bool,
     pub has_rest_arg: bool,
-    pub body: (),
+    pub body: FunctionBody,
 }
 
 #[derive(Debug, Clone)]
@@ -728,6 +748,13 @@ pub struct Decl {
 }
 
 #[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
+pub enum ImportItemStatus {
+    None = 0,
+    Generated,
+    Missing,
+}
+
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Copy, Clone)]
 pub enum SymbolKind {
     // An unbound symbol is one that isn't declared in the file it's referenced
     // in. For example, using "window" without declaring it will be unbound.
@@ -829,6 +856,25 @@ pub struct Symbol {
     // "arguments" variable is declared by the runtime for every function.
     // Renaming can also break any identifier used inside a "with" statement.
     pub must_not_be_renamed: bool,
+
+    // We automatically generate import items for property accesses off of
+    // namespace imports. This lets us remove the expensive namespace imports
+    // while bundling in many cases, replacing them with a cheap import item
+    // instead:
+    //
+    //   import * as ns from 'path'
+    //   ns.foo()
+    //
+    // That can often be replaced by this, which avoids needing the namespace:
+    //
+    //   import {foo} from 'path'
+    //   foo()
+    //
+    // However, if the import is actually missing then we don't want to report a
+    // compile-time error like we do for real import items. This status lets us
+    // avoid this. We also need to be able to replace such import items with
+    // undefined, which this status is also used for.
+    pub import_item_status: ImportItemStatus,
 
     // An estimate of the number of uses of this symbol. This is used for
     // minification (to prefer shorter names for more frequently used symbols).
@@ -955,30 +1001,116 @@ pub enum ImportKind {
 pub struct ImportPath {
     pub path: Path,
     pub kind: ImportKind,
+
+    // If this is true, the import doesn't actually use any imported values. The
+    // import is only used for its side effects.
+    pub does_not_use_exports: bool,
 }
 
-//type AST struct {
 #[derive(Debug, Clone)]
 pub struct AST {
-    pub import_paths: Vec<ImportPath>,
     pub was_typescript: bool,
 
-    // This is true if something used the "exports" or "module" variables, which
-    // means they could have exported something. It's also true if the file
-    // contains a top-level return statement. When a file uses CommonJS features,
+    // This is a list of CommonJS features. When a file uses CommonJS features,
     // it's not a candidate for "flat bundling" and must be wrapped in its own
     // closure.
-    pub uses_commonjs_features: bool,
+    has_top_level_return: bool,
+    uses_exports_ref: bool,
+    uses_module_ref: bool,
+
+    // This is a list of ES6 features
+    has_es6_imports: bool,
+    has_es6_exports: bool,
+
     pub hash_bang: String,
-    pub stmts: Vec<Stmt>,
+    pub parts: Vec<Part>,
     pub symbols: SymbolMap,
     pub module_scope: Scope,
     pub exports_ref: Reference,
     pub module_ref: Reference,
+    pub wrapper_ref: Reference,
 
-    // This is a bitwise-or of all runtime symbols used by this AST. Runtime
-    // symbols are used by ERuntimeCall expressions.
-    pub used_runtime_symbols: (), //TODO: runtime.Syn
+    // These are used when bundling. They are filled in during the parser pass
+    // since we already have to traverse the AST then anyway and the parser pass
+    // is conveniently fully parallelized.
+    named_imports: HashMap<Reference, NamedImport>,
+    named_exports: HashMap<String, Reference>,
+    top_level_symbol_to_parts: HashMap<Reference, Vec<u32>>,
+    export_stars: Vec<Path>,
+}
+
+impl AST {
+    pub fn has_commonjs_features(&self) -> bool {
+        self.has_top_level_return || self.uses_exports_ref || self.uses_module_ref
+    }
+
+    pub fn uses_commonjs_exports(&self) -> bool {
+        self.uses_exports_ref || self.uses_module_ref
+    }
+
+    pub fn has_es6_syntax(&self) -> bool {
+        self.has_es6_imports || self.has_es6_exports
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedImport {
+    alias: String,
+    alias_loc: Location,
+    import_path: Path,
+    namespace_ref: Reference,
+
+    // Parts within this file that use this import
+    local_parts_with_uses: Vec<u32>,
+
+    // It's useful to flag exported imports because if they are in a TypeScript
+    // file, we can't tell if they are a type or a value.
+    is_exported: bool,
+}
+
+// Each file is made up of multiple parts, and each part consists of one or
+// more top-level statements. Parts are used for tree shaking and code
+// splitting analysis. Individual parts of a file can be discarded by tree
+// shaking and can be assigned to separate chunks (i.e. output files) by code
+// splitting.
+#[derive(Debug, Clone)]
+pub struct Part {
+    pub import_paths: Vec<ImportPath>,
+    pub stmts: Vec<Stmt>,
+
+    // All symbols that are declared in this part. Note that a given symbol may
+    // have multiple declarations, and so may end up being declared in multiple
+    // parts (e.g. multiple "var" declarations with the same name). Also note
+    // that this list isn't deduplicated and may contain duplicates.
+    pub declared_symbols: Vec<DeclaredSymbol>,
+
+    // An estimate of the number of uses of all symbols used within this part.
+    pub use_count_estimates: HashMap<Reference, u32>,
+
+    // The indices of the other parts in this file that are needed if this part
+    // is needed.
+    pub local_dependencies: HashMap<u32, bool>,
+
+    // If true, this part can be removed if none of the declared symbols are
+    // used. If the file containing this part is imported, then all parts that
+    // don't have this flag enabled must be included.
+    pub can_be_removed_if_unused: bool,
+
+    // If true, this is the automatically-generated part for this file's ES6
+    // exports. It may hold the "const exports = {};" statement and also the
+    // "__export(exports, { ... })" call to initialize the getters.
+    pub is_namespace_export: bool,
+
+    // This is used for generated parts that we don't want to be present if they
+    // aren't needed. This enables tree shaking for these parts even if global
+    // tree shaking isn't enabled.
+    pub force_tree_shaking: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredSymbol {
+    reference: Reference,
+    is_top_level: bool,
 }
 
 // Returns the canonical ref that represents the ref for the provided symbol.
@@ -1019,17 +1151,6 @@ pub fn follow_all_symbols(symbols: &mut SymbolMap) {
 // together. That way "FollowSymbols" on both "old" and "new" will result in
 // the same ref.
 pub fn merge_symbols(symbols: &mut SymbolMap, old: Reference, new: Reference) -> Reference {
-    // 	if old == new {
-    // 		return new
-    // 	}
-    //
-    // 	oldSymbol := symbols.Get(old)
-    // 	if oldSymbol.Link != InvalidRef {
-    // 		oldSymbol.Link = MergeSymbols(symbols, oldSymbol.Link, new)
-    // 		symbols.Set(old, oldSymbol)
-    // 		return oldSymbol.Link
-    // 	}
-
     if old == new {
         return new;
     }
@@ -1040,26 +1161,12 @@ pub fn merge_symbols(symbols: &mut SymbolMap, old: Reference, new: Reference) ->
         return old_link;
     }
 
-    // 	newSymbol := symbols.Get(new)
-    // 	if newSymbol.Link != InvalidRef {
-    // 		newSymbol.Link = MergeSymbols(symbols, old, newSymbol.Link)
-    // 		symbols.Set(new, newSymbol)
-    // 		return newSymbol.Link
-    // 	}
     let new_link = symbols[new].link;
     if new_link != INVALID_REF {
         symbols[new].link = merge_symbols(symbols, old, new_link);
         return new_link;
     }
 
-    // 	oldSymbol.Link = new
-    // 	newSymbol.UseCountEstimate += oldSymbol.UseCountEstimate
-    // 	if oldSymbol.MustNotBeRenamed {
-    // 		newSymbol.MustNotBeRenamed = true
-    // 	}
-    // 	symbols.Set(old, oldSymbol)
-    // 	symbols.Set(new, newSymbol)
-    // 	return new
     symbols[old].link = new;
     symbols[new].use_count_estimate += symbols[old].use_count_estimate;
     if symbols[old].must_not_be_renamed {
