@@ -32,6 +32,15 @@ pub enum MsgKind {
     Warning,
 }
 
+impl fmt::Display for MsgKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", match self {
+            MsgKind::Error => "error",
+            MsgKind::Warning => "warning",
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Msg {
     pub source: Source,
@@ -374,11 +383,7 @@ impl MsgDetail {
             path: msg.source.pretty_path.clone(),
             line: line_count + 1,
             column: col_count,
-            kind: match msg.kind {
-                MsgKind::Error => "error",
-                MsgKind::Warning => "warning",
-            }
-            .to_owned(),
+            kind: msg.kind.to_string(),
             message: msg.text.to_owned(),
             source: line_text,
             source_before: ..marker_start,
